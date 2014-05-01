@@ -1,247 +1,130 @@
+#!/usr/bin/env python2.7
 # -*- coding: utf-8 -*-
 """
-The following image extraction implementation was taken from an old
-copy of Reddit's source code.
+Extra advanced features we will cover if we have time
+like: multithreading requests, serializing (writing)
+non-ascii html into a file via unicode/codecs.
 """
 
-import logging
-import urllib
-import StringIO
-import math
+# Powerful web library we will be using to download html.
+import urllib2
 
-from PIL import Image, ImageFile
-from urllib2 import Request, HTTPError, URLError, build_opener
-from httplib import InvalidURL
+# HTML parsing library we will be using.
+# Slow but easy to install & use for purposes of this workshop.
+from BeautifulSoup import BeautifulSoup
 
-log = logging.getLogger(__name__)
+# Our custom written multithreading framework.
+# View the mthreading.py file for details.
+from mthreading import Worker, ThreadPool
 
-chunk_size = 1024
-thumbnail_size = 90, 90
-minimal_area = 5000
+# Encoding aware file writer library.
+import codecs
 
-def image_to_str(image):
-    s = StringIO.StringIO()
-    image.save(s, image.format)
-    s.seek(0)
-    return s.read()
+MIN_URL_LEN = 10
 
-def str_to_image(s):
-    s = StringIO.StringIO(s)
-    s.seek(0)
-    image = Image.open(s)
-    return image
+# Utility functions
 
-def prepare_image(image):
-    image = square_image(image)
-    image.thumbnail(thumbnail_size, Image.ANTIALIAS) # inplace
-    return image
-
-def image_entropy(img):
+def is_valid_url(url):
     """
-    Calculate the entropy of an image.
+    Note that this function fails for the scenario when the
+    url is relative. We can write a seperate function
+    to fix this.
+
+    def fix_relative(url): which converts:
+    "/news/blah.html" ==> "http://cnn.com/news/blah.html"
     """
-    hist = img.histogram()
-    hist_size = sum(hist)
-    hist = [float(h) / hist_size for h in hist]
-    return -sum([p * math.log(p, 2) for p in hist if p != 0])
+    if not url or len(url) < MIN_URL_LEN:
+        return False
+    if url[:4] != 'http':
+        return False
 
-def square_image(img):
+    # Perhaps you can brainstorm more on what checks
+    # we can have. We can even try to filter out ad links.
+
+    return True
+
+
+def get_title(soup):
     """
-    If the image is taller than it is wide, square it off. determine
-    which pieces to cut off based on the entropy pieces.
+    Extracts the <title> from an HTML page.
     """
-    x,y = img.size
-    while y > x:
-        # slice 10px at a time until square
-        slice_height = min(y - x, 10)
+    return soup.title.string
 
-        bottom = img.crop((0, y - slice_height, x, y))
-        top = img.crop((0, 0, x, slice_height))
 
-        # remove the slice with the least entropy
-        if image_entropy(bottom) < image_entropy(top):
-            img = img.crop((0, 0, x, y - slice_height))
-        else:
-            img = img.crop((0, slice_height, x, y))
-
-        x,y = img.size
-
-    return img
-
-def clean_url(url):
-    """
-    Url quotes unicode data out of urls.
-    """
-    url = url.encode('utf8')
-    url = ''.join([urllib.quote(c) if ord(c) >= 127 else c for c in url])
-    return url
-
-def fetch_url(url, useragent, referer=None, retries=1, dimension=False):
+def get_links(soup):
     """
     """
-    cur_try = 0
-    nothing = None if dimension else (None, None)
-    url = clean_url(url)
+    # Locate all <a> tags on the html page.
+    link_tags = soup.findAll('a')
 
-    if not url.startswith(('http://', 'https://')):
-        return nothing
+    # Extract out only the 'href' portion of the link <a> tag.
+    links = [tag.get('href') for tag in link_tags]
 
-    while True:
-        try:
-            req = Request(url)
-            req.add_header('User-Agent', useragent)
-            if referer:
-                req.add_header('Referer', referer)
+    # Ensure the links are valid according to our standards
+    links = [link for link in links if is_valid_url(link)]
+    return links
 
-            opener = build_opener()
-            open_req = opener.open(req, timeout=5)
 
-            # if we only need the dimension of the image, we may not
-            # need to download the entire thing
-            if dimension:
-                content = open_req.read(chunk_size)
-            else:
-                content = open_req.read()
+url_one = u'http://sports.yahoo.com/blogs/nhl-puck-daddy/marc-andre-fleury--playoff-disaster--is-holding-penguins-back-from-stanley-cup--trending-topics-135956057.html'
 
-            content_type = open_req.headers.get('content-type')
+url_two = u'http://dailynews.yahoo.co.jp/fc/domestic/ianfu/?id=6114793'
 
-            if not content_type:
-                return nothing
 
-            if 'image' in content_type:
-                p = ImageFile.Parser()
-                new_data = content
-                while not p.image and new_data:
-                    try:
-                        p.feed(new_data)
-                    except IOError, e:
-                        # pil failed to install, jpeg codec broken
-                        # **should work if you install via pillow
-                        print ('***jpeg misconfiguration! check pillow or pil'
-                               'installation this machine: %s' % str(e))
-                        p = None
-                        break
-                    except ValueError, ve:
-                        log.debug('cant read image format: %s' % url)
-                        p = None
-                        break
-                    except Exception, e:
-                        # For some favicon.ico images, the image is so small
-                        # that our PIL feed() method fails a length test.
-                        # We add a check below for this.
-                        """
-                        is_favicon = (urls.url_to_filetype(url) == 'ico')
-                        if is_favicon:
-                            print 'we caught a favicon!: %s' % url
-                        else:
-                            # import traceback
-                            # print traceback.format_exc()
-                            print 'PIL feed() failure for image:', url, str(e)
-                            raise e
-                        """
-                        p = None
-                        break
-                    new_data = open_req.read(chunk_size)
-                    content += new_data
+# Example on how to apply multithreading to send out requests
+# -----------------------------------------------------------
 
-                if p is None:
-                    return nothing
-                # return the size, or return the data
-                if dimension and p.image:
-                    return p.image.size
-                elif dimension:
-                    return nothing
-            elif dimension:
-                # expected an image, but didn't get one
-                return nothing
+class MRequest(object):
+    """
+    Wrapper for sending out a multithreaded request
+    """
+    def __init__(self, url):
+        self.url = url
 
-            return content_type, content
+    def send(self):
+        request = urllib2.Request(self.url)
+        self.resp = urllib2.urlopen(request)
 
-        except (URLError, HTTPError, InvalidURL), e:
-            cur_try += 1
-            if cur_try >= retries:
-                log.debug('error while fetching: %s refer: %s' % (url, referer))
-                return nothing
-        finally:
-            if 'open_req' in locals():
-                open_req.close()
+# We allocate 10 threads to download from 2 urls.
+numb_threads = 10
+pool = ThreadPool(numb_threads)
+urls = [url_one, url_two]
+reqs = []
 
-def fetch_image_dimension(url, useragent, referer=None, retries=1):
-    return fetch_url(url, useragent, referer, retries, dimension=True)
+for url in urls:
+    reqs.append(MRequest(url))
 
-class Scraper:
+# Call send() together concurrently
+for req in reqs:
+    pool.add_task(req.send)
 
-    def __init__(self, url, soup):
-        self.url = url # if not url else url
-        self.useragent = u'ics workshop agent'
+pool.wait_completion()
 
-        self.imgs = [tag.get('src') for tag in soup.findAll('img')]
+# reqs should now be populated with filled responses
 
-    def largest_image_url(self):
-        max_area = 0
-        max_url = None
+print 'length of multithreaded html', len(reqs[0].resp.read()), len(reqs[1].resp.read())
 
-        for img_url in self.imgs:
-            dimension = fetch_image_dimension(img_url, self.useragent, referer=self.url)
-            area = self.calculate_area(img_url, dimension)
 
-            if area > max_area:
-                max_area = area
-                max_url = img_url
+# Example on how to write data into a file.
+# -----------------------------------------
 
-        log.debug('using max img ' + max_url)
-        return max_url
+"""
+# Bad example. Not unicode aware and will result in a
+# decoding error.
+f = open('japan.txt', 'w')
+f.write(html_two)
+f.close()
+"""
 
-    def calculate_area(self, img_url, dimension):
-        if not dimension:
-            return 0
+"""
+# Good example on how to store data from the web.
+f = codecs.open('japan.txt', 'w', 'utf8')
+f.write(html_two)
+f.close()
+"""
 
-        area = dimension[0] * dimension[1]
-
-        #todo: introduce filter classes for each case
-        # ignore little images
-        if area < minimal_area:
-            log.debug('ignore little %s' % img_url)
-            return 0
-
-        # PIL won't scale up, so we set a min width and
-        # maintain the aspect ratio
-        if dimension[0] < thumbnail_size[0]:
-            return 0
-
-        # ignore excessively long/wide images
-        if max(dimension) / min(dimension) > (16/9.0):
-            log.debug('ignore dims %s' % img_url)
-            return 0
-
-        # penalize images with "sprite" in their name
-        lower_case_url = img_url.lower()
-        if 'sprite' in lower_case_url or 'logo' in lower_case_url:
-            log.debug('penalizing sprite %s' % img_url)
-            area /= 10
-
-        return area
-
-    def satisfies_requirements(self, img_url):
-        dimension = fetch_image_dimension(img_url, self.useragent, referer=self.url)
-        area = self.calculate_area(img_url, dimension)
-        return area > minimal_area
-
-    def thumbnail(self):
-        """
-        Identifies top image, trims out a thumbnail and also has a url.
-        """
-        image_url = self.largest_image_url()
-        if image_url:
-            content_type, image_str = fetch_url(image_url, referer=self.url)
-            if image_str:
-                image = str_to_image(image_str)
-                try:
-                    image = prepare_image(image)
-                except IOError, e:
-                    if 'interlaced' in e.message:
-                        return None
-                    # raise
-                return image, image_url
-
-        return None, None
+"""
+f = codecs.open('japan.txt', 'r', 'utf8')
+stored_html = f.read()
+print stored_html
+f.close()
+"""
