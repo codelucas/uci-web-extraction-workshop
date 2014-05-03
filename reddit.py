@@ -122,7 +122,7 @@ def fetch_url(url, useragent, referer=None, retries=1, dimension=False):
                         p = None
                         break
                     except ValueError, ve:
-                        log.debug('cant read image format: %s' % url)
+                        print ('cant read image format: %s' % url)
                         p = None
                         break
                     except Exception, e:
@@ -139,6 +139,7 @@ def fetch_url(url, useragent, referer=None, retries=1, dimension=False):
                             print 'PIL feed() failure for image:', url, str(e)
                             raise e
                         """
+                        print 'Exception', str(e)
                         p = None
                         break
                     new_data = open_req.read(chunk_size)
@@ -184,12 +185,13 @@ class Scraper:
         for img_url in self.imgs:
             dimension = fetch_image_dimension(img_url, self.useragent, referer=self.url)
             area = self.calculate_area(img_url, dimension)
+            print 'dim:', dimension, 'url:', img_url
 
             if area > max_area:
                 max_area = area
                 max_url = img_url
 
-        log.debug('using max img ' + max_url)
+        # log.debug('using max img ' + max_url)
         return max_url
 
     def calculate_area(self, img_url, dimension):
@@ -201,23 +203,24 @@ class Scraper:
         #todo: introduce filter classes for each case
         # ignore little images
         if area < minimal_area:
-            log.debug('ignore little %s' % img_url)
+            print ('ignore little %s' % img_url)
             return 0
 
         # PIL won't scale up, so we set a min width and
         # maintain the aspect ratio
         if dimension[0] < thumbnail_size[0]:
+            print ('ignore min width')
             return 0
 
         # ignore excessively long/wide images
         if max(dimension) / min(dimension) > (16/9.0):
-            log.debug('ignore dims %s' % img_url)
+            print ('ignore dims %s' % img_url)
             return 0
 
         # penalize images with "sprite" in their name
         lower_case_url = img_url.lower()
         if 'sprite' in lower_case_url or 'logo' in lower_case_url:
-            log.debug('penalizing sprite %s' % img_url)
+            print ('penalizing sprite %s' % img_url)
             area /= 10
 
         return area
